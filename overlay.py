@@ -1,3 +1,5 @@
+import subprocess
+import sys
 import threading
 import tkinter as tk
 from datetime import datetime, timezone
@@ -156,9 +158,14 @@ class Overlay:
         m = tk.Menu(self.root, tearoff=0, bg="#161b22", fg="#e6edf3",
                     activebackground=DIVIDER, font=("Consolas", 9))
         m.add_command(label="Refresh now", command=self._force_refresh)
+        m.add_command(label="Restart", command=self._restart)
         m.add_separator()
         m.add_command(label="Quit", command=self.root.quit)
         m.tk_popup(e.x_root, e.y_root)
+
+    def _restart(self):
+        subprocess.Popen([sys.executable] + sys.argv)
+        self.root.quit()
 
     def _force_refresh(self):
         threading.Thread(target=self.fetcher.refresh, daemon=True).start()
