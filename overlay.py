@@ -133,17 +133,21 @@ class Overlay:
         self._drag_x, self._drag_y = e.x, e.y
 
     def _drag_motion(self, e):
+        import ctypes
         x = self.root.winfo_x() + e.x - self._drag_x
         y = self.root.winfo_y() + e.y - self._drag_y
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
-        w  = self.root.winfo_width()
-        h  = self.root.winfo_height()
+        w = self.root.winfo_width()
+        h = self.root.winfo_height()
+        # Virtual desktop spans all monitors
+        vx = ctypes.windll.user32.GetSystemMetrics(76)   # SM_XVIRTUALSCREEN
+        vy = ctypes.windll.user32.GetSystemMetrics(77)   # SM_YVIRTUALSCREEN
+        vw = ctypes.windll.user32.GetSystemMetrics(78)   # SM_CXVIRTUALSCREEN
+        vh = ctypes.windll.user32.GetSystemMetrics(79)   # SM_CYVIRTUALSCREEN
         snap = 20
-        if x < snap:              x = 0
-        elif x + w > sw - snap:   x = sw - w
-        if y < snap:              y = 0
-        elif y + h > sh - snap:   y = sh - h
+        if x - vx < snap:                 x = vx
+        elif (vx + vw) - (x + w) < snap:  x = vx + vw - w
+        if y - vy < snap:                 y = vy
+        elif (vy + vh) - (y + h) < snap:  y = vy + vh - h
         self.root.geometry(f"+{x}+{y}")
 
     # ── Menu ──────────────────────────────────────────────────────────────────
