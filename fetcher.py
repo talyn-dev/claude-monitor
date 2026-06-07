@@ -119,8 +119,10 @@ def _chrome_decrypt(enc_val: bytes, aes_key: bytes) -> str:
     return _dpapi_decrypt(enc_val).decode("utf-8", errors="replace")
 
 
-def _read_chrome_session_key() -> str | None:
+def _read_chrome_session_key() -> "str | None":
     """Return the sessionKey cookie for claude.ai from Chrome, or None on any error."""
+    if not hasattr(ctypes, "windll"):
+        return None  # not Windows
     try:
         cookie_db = (Path.home() /
                      "AppData/Local/Google/Chrome/User Data/Default/Network/Cookies")
