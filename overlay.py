@@ -157,10 +157,13 @@ class Overlay:
         self.lbl_sessions = tk.Label(footer, text="—", bg=BG, fg=DIM,
                                       font=("Consolas", 8))
         self.lbl_sessions.pack(side="left")
+        self.lbl_source = tk.Label(footer, text="local", bg=BG, fg=DIM,
+                                    font=("Consolas", 8))
+        self.lbl_source.pack(side="right")
         self.lbl_range = tk.Label(footer,
                                    text=config_range_label(self.config),
                                    bg=BG, fg=DIM, font=("Consolas", 8))
-        self.lbl_range.pack(side="right")
+        self.lbl_range.pack(side="right", padx=(0, 6))
 
     def _row(self, parent, label, value, color):
         row = tk.Frame(parent, bg=BG)
@@ -235,6 +238,15 @@ class Overlay:
         self.lbl_cache_w.config(text=_fmt(cache_w))
         self.lbl_sessions.config(text=f"{sessions} sess · {msgs} msgs")
         self.lbl_time.config(text=updated)
+
+        source = data.get("source", "local")
+        api_err = data.get("api_error")
+        if source == "api":
+            self.lbl_source.config(text="api", fg=ACCENT)
+        elif api_err:
+            self.lbl_source.config(text="api err", fg=YELLOW)
+        else:
+            self.lbl_source.config(text="local", fg=DIM)
 
         # Usage bars
         daily_cost  = data.get("today", {}).get("total_cost", 0)

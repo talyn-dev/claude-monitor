@@ -5,10 +5,14 @@ DEFAULT = {
     "refresh_interval": 30,
     "claude_dir": str(Path.home() / ".claude"),
     "opacity": 0.88,
-    "display_range": "today",       # "today" or "week" for main token display
-    "week_start_day": 6,            # 0=Mon … 6=Sun (Sunday is typical US billing week)
-    "daily_limit_usd": 0,           # 0 = not configured; set to e.g. 10 to see 44%
+    "display_range": "today",       # "today" or "week"
+    "week_start_day": 6,            # 0=Mon … 6=Sun
+    "daily_limit_usd": 0,           # 0 = not configured
     "weekly_limit_usd": 0,          # 0 = not configured
+    # Set this to your Admin API key (sk-ant-admin...) from
+    # console.anthropic.com/settings/admin-keys
+    # Requires an organization account. Leave blank to use local JSONL files.
+    "admin_api_key": "",
     "pricing": {
         "claude-opus-4-8":  {"input": 5.0,  "output": 25.0, "cache_write": 6.25, "cache_read": 0.50},
         "claude-opus-4-7":  {"input": 5.0,  "output": 25.0, "cache_write": 6.25, "cache_read": 0.50},
