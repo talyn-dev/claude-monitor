@@ -135,6 +135,15 @@ class Overlay:
     def _drag_motion(self, e):
         x = self.root.winfo_x() + e.x - self._drag_x
         y = self.root.winfo_y() + e.y - self._drag_y
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        w  = self.root.winfo_width()
+        h  = self.root.winfo_height()
+        snap = 20
+        if x < snap:              x = 0
+        elif x + w > sw - snap:   x = sw - w
+        if y < snap:              y = 0
+        elif y + h > sh - snap:   y = sh - h
         self.root.geometry(f"+{x}+{y}")
 
     # ── Menu ──────────────────────────────────────────────────────────────────
