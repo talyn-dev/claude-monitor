@@ -1,0 +1,2 @@
+# stdlib only — tkinter is bundled with Python on Windows
+# No third-party deps required
