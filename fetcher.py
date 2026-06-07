@@ -42,14 +42,23 @@ def _merge(dst, src):
         dst["by_model"][model]["cost"] += vals.get("cost", 0.0)
 
 
-def seconds_until_daily_reset():
-    now = datetime.now(timezone.utc)
-    tomorrow = now.date() + timedelta(days=1)
-    reset = datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=timezone.utc)
-    return max(0, int((reset - now).total_seconds()))
+def _parse_ts(ts_str):
+    """ISO 8601 → epoch float, or None."""
+    try:
+        return datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
 
 
-def seconds_until_weekly_reset(week_start_day=6):
+def seconds_until_window_rolls(oldest_epoch, window_hours):
+    """How long until the oldest message ages out of the rolling window."""
+    if oldest_epoch is None:
+        return 0
+    rolls_at = oldest_epoch + window_hours * 3600
+    return max(0, int(rolls_at - datetime.now(timezone.utc).timestamp()))
+
+
+def seconds_until_weekly_reset(week_start_day=6):  # noqa: E302
     now = datetime.now(timezone.utc)
     days_until = (week_start_day - now.weekday()) % 7 or 7
     reset_date = now.date() + timedelta(days=days_until)
@@ -197,32 +206,41 @@ class UsageFetcher:
         claude_dir = Path(self.config["claude_dir"])
         projects_dir = claude_dir / "projects"
         if not projects_dir.exists():
-            return {"today": _empty_totals(), "week": _empty_totals(), "source": "local"}
+            return {"window": _empty_totals(), "week": _empty_totals(), "source": "local"}
+
+        now_epoch  = datetime.now(timezone.utc).timestamp()
+        window_h   = self.config.get("window_hours", 5)
+        window_cut = now_epoch - window_h * 3600
 
         today = date.today()
-        today_str = today.isoformat()
         week_start_day = self.config.get("week_start_day", 6)
         days_since_start = (today.weekday() - week_start_day) % 7
         week_start_str = (today - timedelta(days=days_since_start)).isoformat()
 
-        today_totals = _empty_totals()
-        week_totals = _empty_totals()
-        today_sessions: set = set()
-        week_sessions: set = set()
+        window_totals = _empty_totals()
+        week_totals   = _empty_totals()
+        week_sessions: set   = set()
+        window_oldest: list  = [None]   # mutable box
 
         for jsonl_file in projects_dir.rglob("*.jsonl"):
             try:
-                self._parse_jsonl(jsonl_file, today_str, week_start_str,
-                                  today_totals, week_totals, today_sessions, week_sessions)
+                self._parse_jsonl(
+                    jsonl_file, window_cut, week_start_str,
+                    window_totals, week_totals, week_sessions, window_oldest,
+                )
             except Exception:
                 pass
 
-        today_totals["session_count"] = len(today_sessions)
         week_totals["session_count"] = len(week_sessions)
-        return {"today": today_totals, "week": week_totals, "source": "local"}
+        return {
+            "window": window_totals,
+            "window_oldest_ts": window_oldest[0],
+            "week": week_totals,
+            "source": "local",
+        }
 
-    def _parse_jsonl(self, path, today_str, week_start_str,
-                     today_totals, week_totals, today_sessions, week_sessions):
+    def _parse_jsonl(self, path, window_cut, week_start_str,
+                     window_totals, week_totals, week_sessions, window_oldest):
         pricing = self.config["pricing"]
 
         with open(path, encoding="utf-8", errors="ignore") as f:
@@ -242,17 +260,17 @@ class UsageFetcher:
                 if not usage:
                     continue
 
-                date_str = record.get("timestamp", "")[:10]
-                if date_str < week_start_str:
+                ts_str   = record.get("timestamp", "")
+                date_str = ts_str[:10]
+                msg_epoch = _parse_ts(ts_str)
+
+                in_week   = date_str >= week_start_str
+                in_window = msg_epoch is not None and msg_epoch >= window_cut
+
+                if not in_week and not in_window:
                     continue
 
-                in_today = date_str == today_str
-                session_id = record.get("sessionId", str(path))
-                week_sessions.add(session_id)
-                if in_today:
-                    today_sessions.add(session_id)
-
-                model = msg.get("model", "")
+                model  = msg.get("model", "")
                 prices = pricing.get(model) or _match_pricing(pricing, model)
 
                 inp     = usage.get("input_tokens", 0)
@@ -267,21 +285,26 @@ class UsageFetcher:
                 )
 
                 def _add(t):
-                    t["input_tokens"] += inp
-                    t["output_tokens"] += out
+                    t["input_tokens"]          += inp
+                    t["output_tokens"]         += out
                     t["cache_creation_tokens"] += cache_w
-                    t["cache_read_tokens"] += cache_r
-                    t["total_cost"] += cost
-                    t["message_count"] += 1
+                    t["cache_read_tokens"]     += cache_r
+                    t["total_cost"]            += cost
+                    t["message_count"]         += 1
                     if model not in t["by_model"]:
                         t["by_model"][model] = {"input": 0, "output": 0, "cost": 0.0}
-                    t["by_model"][model]["input"] += inp
+                    t["by_model"][model]["input"]  += inp
                     t["by_model"][model]["output"] += out
-                    t["by_model"][model]["cost"] += cost
+                    t["by_model"][model]["cost"]   += cost
 
-                _add(week_totals)
-                if in_today:
-                    _add(today_totals)
+                if in_week:
+                    week_sessions.add(record.get("sessionId", str(path)))
+                    _add(week_totals)
+
+                if in_window:
+                    _add(window_totals)
+                    if window_oldest[0] is None or msg_epoch < window_oldest[0]:
+                        window_oldest[0] = msg_epoch
 
     # ── Main refresh ──────────────────────────────────────────────────────────
 

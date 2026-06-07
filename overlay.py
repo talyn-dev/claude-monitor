@@ -1,6 +1,8 @@
 import threading
 import tkinter as tk
-from fetcher import fmt_countdown, seconds_until_daily_reset, seconds_until_weekly_reset
+from datetime import datetime, timezone
+
+from fetcher import fmt_countdown, seconds_until_weekly_reset, seconds_until_window_rolls
 
 BG      = "#0d1117"
 ACCENT  = "#58a6ff"
@@ -31,12 +33,12 @@ class _Bar:
     def __init__(self, parent, height=8):
         self._c = tk.Canvas(parent, height=height, bg=BG, highlightthickness=0)
         self._c.pack(fill="x", padx=12, pady=(2, 6))
-        self._pct = 0.0
+        self._pct   = 0.0
         self._color = DIVIDER
         self._c.bind("<Configure>", lambda _e: self._draw())
 
     def update(self, pct, color):
-        self._pct = max(0.0, min(1.0, pct))
+        self._pct   = max(0.0, min(1.0, pct))
         self._color = color
         self._draw()
 
@@ -45,7 +47,7 @@ class _Bar:
         if w <= 1:
             return
         self._c.delete("all")
-        self._c.create_rectangle(0, 0, w, h, fill=DIVIDER, outline="", tags="bg")
+        self._c.create_rectangle(0, 0, w, h, fill=DIVIDER, outline="")
         fw = int(w * self._pct)
         if fw > 0:
             self._c.create_rectangle(0, 0, fw, h, fill=self._color, outline="")
@@ -53,10 +55,10 @@ class _Bar:
 
 class Overlay:
     def __init__(self, fetcher, config):
-        self.fetcher = fetcher
-        self.config = config
-        self._drag_x = self._drag_y = 0
-        self._last_data = {}
+        self.fetcher   = fetcher
+        self.config    = config
+        self._drag_x   = self._drag_y = 0
+        self._last_data: dict = {}
 
         self.root = tk.Tk()
         self.root.title("Claude Monitor")
@@ -79,15 +81,17 @@ class Overlay:
     # ── Build ─────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        # Daily block
-        self._daily_row, self.lbl_daily_cost, self.lbl_daily_pct, self.lbl_daily_reset = \
-            self._bar_block("Daily")
-        self.bar_daily = _Bar(self.root)
+        wh = self.config.get("window_hours", 5)
+
+        # Rolling window block
+        _, self.lbl_win_cost, self.lbl_win_pct, self.lbl_win_reset = \
+            self._bar_block(f"{wh}h window")
+        self.bar_win = _Bar(self.root)
 
         tk.Frame(self.root, bg=DIVIDER, height=1).pack(fill="x", padx=8)
 
         # Weekly block
-        self._week_row, self.lbl_week_cost, self.lbl_week_pct, self.lbl_week_reset = \
+        _, self.lbl_week_cost, self.lbl_week_pct, self.lbl_week_reset = \
             self._bar_block("Weekly")
         self.bar_week = _Bar(self.root)
 
@@ -153,21 +157,15 @@ class Overlay:
 
     def _update_ui(self, data):
         self._last_data = data
-        daily_cost  = data.get("today", {}).get("total_cost", 0)
-        weekly_cost = data.get("week",  {}).get("total_cost", 0)
-        d_limit = self.config.get("daily_limit_usd",  0)
-        w_limit = self.config.get("weekly_limit_usd", 0)
-        updated = data.get("last_updated", "—")
 
-        self._refresh_block(
-            self.lbl_daily_cost, self.lbl_daily_pct, self.bar_daily,
-            daily_cost, d_limit,
-        )
-        self._refresh_block(
-            self.lbl_week_cost, self.lbl_week_pct, self.bar_week,
-            weekly_cost, w_limit,
-        )
-        self.lbl_updated.config(text=updated)
+        win_cost  = data.get("window", {}).get("total_cost", 0)
+        week_cost = data.get("week",   {}).get("total_cost", 0)
+        w_limit   = self.config.get("window_limit_usd", 0)
+        wk_limit  = self.config.get("weekly_limit_usd", 0)
+
+        self._refresh_block(self.lbl_win_cost,  self.lbl_win_pct,  self.bar_win,  win_cost,  w_limit)
+        self._refresh_block(self.lbl_week_cost, self.lbl_week_pct, self.bar_week, week_cost, wk_limit)
+        self.lbl_updated.config(text=data.get("last_updated", "—"))
 
     def _refresh_block(self, lbl_cost, lbl_pct, bar, cost, limit):
         lbl_cost.config(text=f"${cost:.2f}", fg=_cost_color(cost))
@@ -180,12 +178,22 @@ class Overlay:
             lbl_pct.config(text="", fg=DIM)
             bar.update(0, DIVIDER)
 
-    # ── Live countdown ────────────────────────────────────────────────────────
+    # ── Live countdowns ───────────────────────────────────────────────────────
 
     def _tick(self):
-        wsd = self.config.get("week_start_day", 6)
-        self.lbl_daily_reset.config(text=f"↺ {fmt_countdown(seconds_until_daily_reset())}")
-        self.lbl_week_reset.config(text=f"↺ {fmt_countdown(seconds_until_weekly_reset(wsd))}")
+        wsd      = self.config.get("week_start_day", 6)
+        wh       = self.config.get("window_hours", 5)
+        oldest   = self._last_data.get("window_oldest_ts")
+
+        win_secs  = seconds_until_window_rolls(oldest, wh)
+        week_secs = seconds_until_weekly_reset(wsd)
+
+        if oldest is not None:
+            self.lbl_win_reset.config(text=f"↺ {fmt_countdown(win_secs)}")
+        else:
+            self.lbl_win_reset.config(text="↺ fresh")
+
+        self.lbl_week_reset.config(text=f"↺ {fmt_countdown(week_secs)}")
         self.root.after(1000, self._tick)
 
     def run(self):

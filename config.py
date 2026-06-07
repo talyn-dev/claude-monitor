@@ -7,7 +7,8 @@ DEFAULT = {
     "opacity": 0.88,
     "display_range": "today",       # "today" or "week"
     "week_start_day": 6,            # 0=Mon … 6=Sun
-    "daily_limit_usd": 0,           # 0 = not configured
+    "window_hours": 5,              # rolling usage window (Claude Code resets every 5h)
+    "window_limit_usd": 0,          # 0 = not configured; set e.g. 5.0 to see 49%
     "weekly_limit_usd": 0,          # 0 = not configured
     # Set this to your Admin API key (sk-ant-admin...) from
     # console.anthropic.com/settings/admin-keys
