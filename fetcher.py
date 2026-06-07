@@ -1,6 +1,6 @@
 import json
 import threading
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -9,6 +9,50 @@ def _match_pricing(pricing, model):
         if key != "default" and model.startswith(key):
             return prices
     return pricing["default"]
+
+
+def _empty_totals():
+    return {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_tokens": 0,
+        "cache_read_tokens": 0,
+        "total_cost": 0.0,
+        "message_count": 0,
+        "session_count": 0,
+        "by_model": {},
+    }
+
+
+def seconds_until_daily_reset():
+    now = datetime.now(timezone.utc)
+    tomorrow = now.date() + timedelta(days=1)
+    reset = datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=timezone.utc)
+    return max(0, int((reset - now).total_seconds()))
+
+
+def seconds_until_weekly_reset(week_start_day=6):
+    now = datetime.now(timezone.utc)
+    today_wd = now.weekday()  # Mon=0, Sun=6
+    days_until = (week_start_day - today_wd) % 7
+    if days_until == 0:
+        days_until = 7
+    reset_date = now.date() + timedelta(days=days_until)
+    reset = datetime(reset_date.year, reset_date.month, reset_date.day, tzinfo=timezone.utc)
+    return max(0, int((reset - now).total_seconds()))
+
+
+def fmt_countdown(seconds):
+    if seconds <= 0:
+        return "now"
+    d, rem = divmod(seconds, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    if d > 0:
+        return f"{d}d {h}h {m}m"
+    if h > 0:
+        return f"{h}h {m}m"
+    return f"{m}m"
 
 
 class UsageFetcher:
@@ -37,32 +81,37 @@ class UsageFetcher:
         claude_dir = Path(self.config["claude_dir"])
         projects_dir = claude_dir / "projects"
         if not projects_dir.exists():
-            return {}
+            return {"today": _empty_totals(), "week": _empty_totals()}
 
-        today = date.today().isoformat()
-        totals = {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cache_creation_tokens": 0,
-            "cache_read_tokens": 0,
-            "total_cost": 0.0,
-            "message_count": 0,
-            "by_model": {},
-        }
-        seen_sessions = set()
+        today = date.today()
+        today_str = today.isoformat()
+
+        week_start_day = self.config.get("week_start_day", 6)
+        days_since_start = (today.weekday() - week_start_day) % 7
+        week_start = today - timedelta(days=days_since_start)
+        week_start_str = week_start.isoformat()
+
+        today_totals = _empty_totals()
+        week_totals = _empty_totals()
+        today_sessions = set()
+        week_sessions = set()
 
         for jsonl_file in projects_dir.rglob("*.jsonl"):
             try:
-                self._parse_file(jsonl_file, today, totals, seen_sessions)
+                self._parse_file(
+                    jsonl_file, today_str, week_start_str,
+                    today_totals, week_totals, today_sessions, week_sessions,
+                )
             except Exception:
                 pass
 
-        totals["session_count"] = len(seen_sessions)
-        return totals
+        today_totals["session_count"] = len(today_sessions)
+        week_totals["session_count"] = len(week_sessions)
+        return {"today": today_totals, "week": week_totals}
 
-    def _parse_file(self, path, today_filter, totals, seen_sessions):
+    def _parse_file(self, path, today_str, week_start_str,
+                    today_totals, week_totals, today_sessions, week_sessions):
         pricing = self.config["pricing"]
-        today_only = self.config.get("today_only", True)
 
         with open(path, encoding="utf-8", errors="ignore") as f:
             for line in f:
@@ -83,10 +132,18 @@ class UsageFetcher:
                     continue
 
                 timestamp = record.get("timestamp", "")
-                if today_only and not timestamp.startswith(today_filter):
+                date_str = timestamp[:10]  # "YYYY-MM-DD"
+
+                in_week = date_str >= week_start_str
+                in_today = date_str == today_str
+
+                if not in_week:
                     continue
 
-                seen_sessions.add(record.get("sessionId", str(path)))
+                session_id = record.get("sessionId", str(path))
+                week_sessions.add(session_id)
+                if in_today:
+                    today_sessions.add(session_id)
 
                 model = msg.get("model", "")
                 prices = pricing.get(model) or _match_pricing(pricing, model)
@@ -103,18 +160,22 @@ class UsageFetcher:
                     + (cache_r / 1_000_000) * prices["cache_read"]
                 )
 
-                totals["input_tokens"] += inp
-                totals["output_tokens"] += out
-                totals["cache_creation_tokens"] += cache_w
-                totals["cache_read_tokens"] += cache_r
-                totals["total_cost"] += cost
-                totals["message_count"] += 1
+                def _add(totals, sessions_set, session_id):
+                    totals["input_tokens"] += inp
+                    totals["output_tokens"] += out
+                    totals["cache_creation_tokens"] += cache_w
+                    totals["cache_read_tokens"] += cache_r
+                    totals["total_cost"] += cost
+                    totals["message_count"] += 1
+                    if model not in totals["by_model"]:
+                        totals["by_model"][model] = {"input": 0, "output": 0, "cost": 0.0}
+                    totals["by_model"][model]["input"] += inp
+                    totals["by_model"][model]["output"] += out
+                    totals["by_model"][model]["cost"] += cost
 
-                if model not in totals["by_model"]:
-                    totals["by_model"][model] = {"input": 0, "output": 0, "cost": 0.0}
-                totals["by_model"][model]["input"] += inp
-                totals["by_model"][model]["output"] += out
-                totals["by_model"][model]["cost"] += cost
+                _add(week_totals, week_sessions, session_id)
+                if in_today:
+                    _add(today_totals, today_sessions, session_id)
 
     def refresh(self):
         data = self._scan()

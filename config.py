@@ -5,7 +5,10 @@ DEFAULT = {
     "refresh_interval": 30,
     "claude_dir": str(Path.home() / ".claude"),
     "opacity": 0.88,
-    "today_only": True,
+    "display_range": "today",       # "today" or "week" for main token display
+    "week_start_day": 6,            # 0=Mon … 6=Sun (Sunday is typical US billing week)
+    "daily_limit_usd": 0,           # 0 = not configured; set to e.g. 10 to see 44%
+    "weekly_limit_usd": 0,          # 0 = not configured
     "pricing": {
         "claude-opus-4-8":  {"input": 5.0,  "output": 25.0, "cache_write": 6.25, "cache_read": 0.50},
         "claude-opus-4-7":  {"input": 5.0,  "output": 25.0, "cache_write": 6.25, "cache_read": 0.50},
