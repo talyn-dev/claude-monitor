@@ -1,4 +1,9 @@
+import base64
+import ctypes
+import ctypes.wintypes
 import json
+import sqlite3
+import tempfile
 import threading
 import urllib.error
 import urllib.parse
@@ -77,6 +82,115 @@ def fmt_countdown(seconds):
     if h > 0:
         return f"{h}h {m}m"
     return f"{m}m"
+
+
+# ── Chrome cookie auto-read (Windows, DPAPI + AES-GCM) ───────────────────────
+
+class _Blob(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.wintypes.DWORD),
+                ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def _dpapi_decrypt(data: bytes) -> bytes:
+    ib = _Blob(len(data), ctypes.create_string_buffer(data, len(data)))
+    ob = _Blob()
+    ok = ctypes.windll.crypt32.CryptUnprotectData(
+        ctypes.byref(ib), None, None, None, None, 0, ctypes.byref(ob))
+    if not ok:
+        raise RuntimeError("DPAPI failed")
+    result = ctypes.string_at(ob.pbData, ob.cbData)
+    ctypes.windll.kernel32.LocalFree(ob.pbData)
+    return result
+
+
+def _chrome_aes_key() -> bytes:
+    local_state = Path.home() / "AppData/Local/Google/Chrome/User Data/Local State"
+    data = json.loads(local_state.read_text(encoding="utf-8"))
+    enc_key = base64.b64decode(data["os_crypt"]["encrypted_key"])[5:]
+    return _dpapi_decrypt(enc_key)
+
+
+def _chrome_decrypt(enc_val: bytes, aes_key: bytes) -> str:
+    if enc_val[:3] == b"v10":
+        from Crypto.Cipher import AES
+        nonce = enc_val[3:15]
+        cipher = AES.new(aes_key, AES.MODE_GCM, nonce=nonce)
+        return cipher.decrypt(enc_val[15:])[:-16].decode("utf-8", errors="replace")
+    return _dpapi_decrypt(enc_val).decode("utf-8", errors="replace")
+
+
+def _read_chrome_session_key() -> str | None:
+    """Return the sessionKey cookie for claude.ai from Chrome, or None on any error."""
+    try:
+        cookie_db = (Path.home() /
+                     "AppData/Local/Google/Chrome/User Data/Default/Network/Cookies")
+        if not cookie_db.exists():
+            return None
+
+        tmp = Path(tempfile.mktemp(suffix=".db"))
+        try:
+            import shutil
+            shutil.copy2(cookie_db, tmp)
+        except Exception:
+            return None
+
+        aes_key = _chrome_aes_key()
+        try:
+            con = sqlite3.connect(f"file:{tmp}?mode=ro&immutable=1", uri=True)
+            row = con.execute(
+                "SELECT encrypted_value FROM cookies "
+                "WHERE host_key LIKE '%claude.ai%' AND name='sessionKey' "
+                "ORDER BY last_access_utc DESC LIMIT 1"
+            ).fetchone()
+            con.close()
+            if row:
+                return _chrome_decrypt(bytes(row[0]), aes_key)
+        finally:
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None
+
+
+# ── claude.ai internal API ────────────────────────────────────────────────────
+
+_CLAUDE_BASE = "https://claude.ai"
+_CLAUDE_ORG  = "c701af89-8956-456f-a2eb-b5d041da46b8"
+
+_CLAUDE_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/124.0.0.0 Safari/537.36"),
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://claude.ai/settings/usage",
+}
+
+
+def _claude_get(path: str, session_key: str) -> dict:
+    url = f"{_CLAUDE_BASE}{path}"
+    req = urllib.request.Request(url, headers={
+        **_CLAUDE_HEADERS,
+        "Cookie": f"sessionKey={session_key}",
+    })
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
+def _fetch_from_claude_ai(session_key: str) -> dict:
+    """Fetch the real usage percentages and reset times from claude.ai."""
+    usage = _claude_get(f"/api/organizations/{_CLAUDE_ORG}/usage", session_key)
+    fh = usage.get("five_hour") or {}
+    sd = usage.get("seven_day") or {}
+    return {
+        "source": "claude_ai",
+        "window_pct": fh.get("utilization"),       # e.g. 74.0
+        "window_resets_at": fh.get("resets_at"),   # ISO string
+        "weekly_pct": sd.get("utilization"),
+        "weekly_resets_at": sd.get("resets_at"),
+    }
 
 
 # ── Anthropic Admin API ───────────────────────────────────────────────────────
@@ -309,18 +423,29 @@ class UsageFetcher:
     # ── Main refresh ──────────────────────────────────────────────────────────
 
     def refresh(self):
-        admin_key = self.config.get("admin_api_key", "").strip()
-        if admin_key:
+        # Always scan local JSONL for cost estimates
+        data = self._scan_local()
+
+        # Try claude.ai API for real percentages
+        session_key = self.config.get("claude_session", "").strip()
+        if not session_key:
+            session_key = _read_chrome_session_key() or ""
+
+        if session_key:
             try:
-                data = self._fetch_from_api(admin_key)
-            except urllib.error.HTTPError as e:
-                data = self._scan_local()
-                data["api_error"] = f"HTTP {e.code}: {e.reason}"
+                ai_data = _fetch_from_claude_ai(session_key)
+                data.update(ai_data)
             except Exception as e:
-                data = self._scan_local()
+                data["claude_ai_error"] = str(e)
+
+        # Optionally also try Admin API for more detailed cost data
+        admin_key = self.config.get("admin_api_key", "").strip()
+        if admin_key and data.get("source") != "claude_ai":
+            try:
+                api_data = self._fetch_from_api(admin_key)
+                data.update(api_data)
+            except Exception as e:
                 data["api_error"] = str(e)
-        else:
-            data = self._scan_local()
 
         data["last_updated"] = datetime.now().strftime("%H:%M:%S")
         with self._lock:

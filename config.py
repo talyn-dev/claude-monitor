@@ -8,8 +8,11 @@ DEFAULT = {
     "display_range": "today",       # "today" or "week"
     "week_start_day": 6,            # 0=Mon … 6=Sun
     "window_hours": 5,              # rolling usage window (Claude Code resets every 5h)
-    "window_limit_usd": 0,          # 0 = not configured; set e.g. 5.0 to see 49%
-    "weekly_limit_usd": 0,          # 0 = not configured
+    "window_limit_usd": 0,          # 0 = not configured; only used if claude_session is empty
+    "weekly_limit_usd": 0,          # 0 = not configured; only used if claude_session is empty
+    # Paste your claude.ai sessionKey cookie here for real % from the API.
+    # Leave blank to auto-read from Chrome (works when Chrome is closed).
+    "claude_session": "",
     # Set this to your Admin API key (sk-ant-admin...) from
     # console.anthropic.com/settings/admin-keys
     # Requires an organization account. Leave blank to use local JSONL files.

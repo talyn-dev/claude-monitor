@@ -2,7 +2,7 @@ import threading
 import tkinter as tk
 from datetime import datetime, timezone
 
-from fetcher import fmt_countdown, seconds_until_weekly_reset, seconds_until_window_rolls
+from fetcher import fmt_countdown, seconds_until_weekly_reset, seconds_until_window_rolls, _parse_ts
 
 BG      = "#0d1117"
 ACCENT  = "#58a6ff"
@@ -160,16 +160,27 @@ class Overlay:
 
         win_cost  = data.get("window", {}).get("total_cost", 0)
         week_cost = data.get("week",   {}).get("total_cost", 0)
-        w_limit   = self.config.get("window_limit_usd", 0)
-        wk_limit  = self.config.get("weekly_limit_usd", 0)
 
-        self._refresh_block(self.lbl_win_cost,  self.lbl_win_pct,  self.bar_win,  win_cost,  w_limit)
-        self._refresh_block(self.lbl_week_cost, self.lbl_week_pct, self.bar_week, week_cost, wk_limit)
+        # Use real percentages from claude.ai API if available
+        win_pct_api  = data.get("window_pct")   # e.g. 74.0 or None
+        week_pct_api = data.get("weekly_pct")
+
+        self._refresh_block(self.lbl_win_cost,  self.lbl_win_pct,  self.bar_win,
+                            win_cost,  win_pct_api,
+                            self.config.get("window_limit_usd", 0))
+        self._refresh_block(self.lbl_week_cost, self.lbl_week_pct, self.bar_week,
+                            week_cost, week_pct_api,
+                            self.config.get("weekly_limit_usd", 0))
         self.lbl_updated.config(text=data.get("last_updated", "—"))
 
-    def _refresh_block(self, lbl_cost, lbl_pct, bar, cost, limit):
+    def _refresh_block(self, lbl_cost, lbl_pct, bar, cost, api_pct, limit):
         lbl_cost.config(text=f"${cost:.2f}", fg=_cost_color(cost))
-        if limit and limit > 0:
+        if api_pct is not None:
+            pct   = api_pct / 100.0
+            color = _pct_color(pct)
+            lbl_pct.config(text=f"{api_pct:.0f}%", fg=color)
+            bar.update(pct, color)
+        elif limit and limit > 0:
             pct   = cost / limit
             color = _pct_color(pct)
             lbl_pct.config(text=f"{pct * 100:.1f}%", fg=color)
@@ -181,19 +192,30 @@ class Overlay:
     # ── Live countdowns ───────────────────────────────────────────────────────
 
     def _tick(self):
-        wsd      = self.config.get("week_start_day", 6)
-        wh       = self.config.get("window_hours", 5)
-        oldest   = self._last_data.get("window_oldest_ts")
+        now_epoch = datetime.now(timezone.utc).timestamp()
 
-        win_secs  = seconds_until_window_rolls(oldest, wh)
-        week_secs = seconds_until_weekly_reset(wsd)
-
-        if oldest is not None:
+        # Window countdown: prefer resets_at from API, fall back to oldest_ts math
+        win_resets_at = self._last_data.get("window_resets_at")
+        if win_resets_at:
+            resets_epoch = _parse_ts(win_resets_at)
+            win_secs = max(0, int((resets_epoch or now_epoch) - now_epoch))
             self.lbl_win_reset.config(text=f"↺ {fmt_countdown(win_secs)}")
         else:
-            self.lbl_win_reset.config(text="↺ fresh")
+            wh      = self.config.get("window_hours", 5)
+            oldest  = self._last_data.get("window_oldest_ts")
+            win_secs = seconds_until_window_rolls(oldest, wh)
+            self.lbl_win_reset.config(
+                text=f"↺ {fmt_countdown(win_secs)}" if oldest else "↺ fresh")
 
+        # Weekly countdown: prefer resets_at from API
+        week_resets_at = self._last_data.get("weekly_resets_at")
+        if week_resets_at:
+            resets_epoch = _parse_ts(week_resets_at)
+            week_secs = max(0, int((resets_epoch or now_epoch) - now_epoch))
+        else:
+            week_secs = seconds_until_weekly_reset(self.config.get("week_start_day", 6))
         self.lbl_week_reset.config(text=f"↺ {fmt_countdown(week_secs)}")
+
         self.root.after(1000, self._tick)
 
     def run(self):
