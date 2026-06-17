@@ -160,7 +160,10 @@ def _read_chrome_session_key() -> "str | None":
 # ── claude.ai internal API ────────────────────────────────────────────────────
 
 _CLAUDE_BASE = "https://claude.ai"
-_CLAUDE_ORG  = "c701af89-8956-456f-a2eb-b5d041da46b8"
+
+# Resolved per session key at runtime (see _get_org_id). The org UUID differs
+# for every account, so it must never be hardcoded.
+_ORG_CACHE: "dict[str, str]" = {}
 
 _CLAUDE_HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -181,9 +184,40 @@ def _claude_get(path: str, session_key: str) -> dict:
         return json.loads(resp.read())
 
 
+def _get_org_id(session_key: str) -> str:
+    """Resolve the organization UUID for the account behind this session key.
+
+    Cached per session key. Picks the org that actually has a Claude
+    subscription (chat capability), falling back to the first org returned.
+    """
+    cached = _ORG_CACHE.get(session_key)
+    if cached:
+        return cached
+
+    orgs = _claude_get("/api/organizations", session_key)
+    if not isinstance(orgs, list) or not orgs:
+        raise RuntimeError("no organizations returned for this session key")
+
+    chosen = None
+    for org in orgs:
+        caps = org.get("capabilities") or []
+        if "chat" in caps or "claude_pro" in caps or "claude_max" in caps:
+            chosen = org
+            break
+    chosen = chosen or orgs[0]
+
+    org_id = chosen.get("uuid") or chosen.get("id")
+    if not org_id:
+        raise RuntimeError("organization record had no uuid")
+
+    _ORG_CACHE[session_key] = org_id
+    return org_id
+
+
 def _fetch_from_claude_ai(session_key: str) -> dict:
     """Fetch the real usage percentages and reset times from claude.ai."""
-    usage = _claude_get(f"/api/organizations/{_CLAUDE_ORG}/usage", session_key)
+    org_id = _get_org_id(session_key)
+    usage = _claude_get(f"/api/organizations/{org_id}/usage", session_key)
     fh = usage.get("five_hour") or {}
     sd = usage.get("seven_day") or {}
     return {
