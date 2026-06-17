@@ -4,7 +4,7 @@ import threading
 import tkinter as tk
 from datetime import datetime, timezone
 
-from fetcher import fmt_countdown, seconds_until_weekly_reset, seconds_until_window_rolls, _parse_ts
+from fetcher import fmt_countdown, seconds_until_window_rolls, _parse_ts
 
 BG      = "#0d1117"
 ACCENT  = "#58a6ff"
@@ -31,10 +31,27 @@ def _cost_color(cost):
     return RED
 
 
+def window_reset_secs(data, config):
+    """Seconds until the rolling window resets.
+
+    Prefers the API's resets_at, falls back to oldest_ts math.
+    Returns None when the window is fresh / unknown.
+    """
+    now_epoch = datetime.now(timezone.utc).timestamp()
+    win_resets_at = data.get("window_resets_at")
+    if win_resets_at:
+        resets_epoch = _parse_ts(win_resets_at)
+        return max(0, int((resets_epoch or now_epoch) - now_epoch))
+    oldest = data.get("window_oldest_ts")
+    if oldest:
+        return seconds_until_window_rolls(oldest, config.get("window_hours", 5))
+    return None
+
+
 class _Bar:
-    def __init__(self, parent, height=8):
+    def __init__(self, parent, height=4):
         self._c = tk.Canvas(parent, height=height, bg=BG, highlightthickness=0)
-        self._c.pack(fill="x", padx=12, pady=(2, 6))
+        self._c.pack(fill="x", padx=6, pady=(1, 3))
         self._pct   = 0.0
         self._color = DIVIDER
         self._c.bind("<Configure>", lambda _e: self._draw())
@@ -61,6 +78,7 @@ class Overlay:
         self.config    = config
         self._drag_x   = self._drag_y = 0
         self._last_data: dict = {}
+        self.on_quit   = None   # optional hook (e.g. stop tray) run before quitting
 
         self.root = tk.Tk()
         self.root.title("Claude Monitor")
@@ -68,7 +86,7 @@ class Overlay:
         self.root.attributes("-topmost", True)
         self.root.attributes("-alpha", config.get("opacity", 0.88))
         self.root.configure(bg=BG)
-        self.root.minsize(200, 10)
+        self.root.minsize(100, 10)
 
         self._build_ui()
         self._position_top_right()
@@ -76,9 +94,43 @@ class Overlay:
         self.root.bind("<B1-Motion>",     self._drag_motion)
         self.root.bind("<Button-3>",      self._show_menu)
 
+        self._visible = bool(config.get("overlay_visible", False))
+        if not self._visible:
+            self.root.withdraw()
+
         fetcher.add_callback(self._on_data)
         fetcher.start()
         self._tick()
+
+    # ── Visibility ──────────────────────────────────────────────────────────────
+
+    def is_visible(self):
+        return self._visible
+
+    def show(self):
+        self._visible = True
+        self.root.deiconify()
+        self.root.attributes("-topmost", True)
+        self._position_top_right()
+
+    def hide(self):
+        self._visible = False
+        self.root.withdraw()
+
+    def toggle(self):
+        self.hide() if self._visible else self.show()
+
+    def request_quit(self):
+        """Thread-safe quit entry point (e.g. from the tray)."""
+        self.root.after(0, self._quit)
+
+    def _quit(self):
+        if self.on_quit:
+            try:
+                self.on_quit()
+            except Exception:
+                pass
+        self.root.quit()
 
     # ── Build ─────────────────────────────────────────────────────────────────
 
@@ -90,36 +142,29 @@ class Overlay:
             self._bar_block(f"{wh}h window")
         self.bar_win = _Bar(self.root)
 
-        tk.Frame(self.root, bg=DIVIDER, height=1).pack(fill="x", padx=8)
-
-        # Weekly block
-        _, self.lbl_week_cost, self.lbl_week_pct, self.lbl_week_reset = \
-            self._bar_block("Weekly")
-        self.bar_week = _Bar(self.root)
-
         # Footer
         foot = tk.Frame(self.root, bg=BG)
-        foot.pack(fill="x", padx=12, pady=(2, 6))
-        self.lbl_updated = tk.Label(foot, text="—", bg=BG, fg=DIM, font=("Consolas", 8))
+        foot.pack(fill="x", padx=6, pady=(1, 3))
+        self.lbl_updated = tk.Label(foot, text="—", bg=BG, fg=DIM, font=("Consolas", 6))
         self.lbl_updated.pack(side="left")
 
     def _bar_block(self, label):
         row = tk.Frame(self.root, bg=BG)
-        row.pack(fill="x", padx=12, pady=(8, 0))
+        row.pack(fill="x", padx=6, pady=(4, 0))
 
         tk.Label(row, text=label, bg=BG, fg=DIM,
-                 font=("Consolas", 9)).pack(side="left")
+                 font=("Consolas", 7)).pack(side="left")
 
         lbl_pct = tk.Label(row, text="", bg=BG, fg=DIM,
-                           font=("Consolas", 9, "bold"))
-        lbl_pct.pack(side="left", padx=(6, 0))
+                           font=("Consolas", 7, "bold"))
+        lbl_pct.pack(side="left", padx=(3, 0))
 
-        lbl_reset = tk.Label(row, text="", bg=BG, fg=DIM, font=("Consolas", 8))
+        lbl_reset = tk.Label(row, text="", bg=BG, fg=DIM, font=("Consolas", 6))
         lbl_reset.pack(side="right")
 
         lbl_cost = tk.Label(row, text="$0.00", bg=BG, fg=GREEN,
-                            font=("Consolas", 9, "bold"))
-        lbl_cost.pack(side="right", padx=(0, 8))
+                            font=("Consolas", 7, "bold"))
+        lbl_cost.pack(side="right", padx=(0, 4))
 
         return row, lbl_cost, lbl_pct, lbl_reset
 
@@ -128,8 +173,11 @@ class Overlay:
     def _position_top_right(self):
         self.root.update_idletasks()
         sw = self.root.winfo_screenwidth()
-        w  = self.root.winfo_reqwidth()
-        self.root.geometry(f"+{sw - w - 20}+20")
+        scale = self.config.get("width_scale", 0.5)
+        nat_w = self.root.winfo_reqwidth()
+        nat_h = self.root.winfo_reqheight()
+        w = max(self.root.minsize()[0], int(nat_w * scale))
+        self.root.geometry(f"{w}x{nat_h}+{sw - w - 20}+20")
 
     def _drag_start(self, e):
         self._drag_x, self._drag_y = e.x, e.y
@@ -160,7 +208,7 @@ class Overlay:
         m.add_command(label="Refresh now", command=self._force_refresh)
         m.add_command(label="Restart", command=self._restart)
         m.add_separator()
-        m.add_command(label="Quit", command=self.root.quit)
+        m.add_command(label="Quit", command=self._quit)
         m.tk_popup(e.x_root, e.y_root)
 
     def _restart(self):
@@ -179,18 +227,13 @@ class Overlay:
         self._last_data = data
 
         win_cost  = data.get("window", {}).get("total_cost", 0)
-        week_cost = data.get("week",   {}).get("total_cost", 0)
 
         # Use real percentages from claude.ai API if available
         win_pct_api  = data.get("window_pct")   # e.g. 74.0 or None
-        week_pct_api = data.get("weekly_pct")
 
         self._refresh_block(self.lbl_win_cost,  self.lbl_win_pct,  self.bar_win,
                             win_cost,  win_pct_api,
                             self.config.get("window_limit_usd", 0))
-        self._refresh_block(self.lbl_week_cost, self.lbl_week_pct, self.bar_week,
-                            week_cost, week_pct_api,
-                            self.config.get("weekly_limit_usd", 0))
         self.lbl_updated.config(text=data.get("last_updated", "—"))
 
     def _refresh_block(self, lbl_cost, lbl_pct, bar, cost, api_pct, limit):
@@ -212,29 +255,11 @@ class Overlay:
     # ── Live countdowns ───────────────────────────────────────────────────────
 
     def _tick(self):
-        now_epoch = datetime.now(timezone.utc).timestamp()
-
-        # Window countdown: prefer resets_at from API, fall back to oldest_ts math
-        win_resets_at = self._last_data.get("window_resets_at")
-        if win_resets_at:
-            resets_epoch = _parse_ts(win_resets_at)
-            win_secs = max(0, int((resets_epoch or now_epoch) - now_epoch))
-            self.lbl_win_reset.config(text=f"↺ {fmt_countdown(win_secs)}")
+        secs = window_reset_secs(self._last_data, self.config)
+        if secs is None:
+            self.lbl_win_reset.config(text="↺ fresh")
         else:
-            wh      = self.config.get("window_hours", 5)
-            oldest  = self._last_data.get("window_oldest_ts")
-            win_secs = seconds_until_window_rolls(oldest, wh)
-            self.lbl_win_reset.config(
-                text=f"↺ {fmt_countdown(win_secs)}" if oldest else "↺ fresh")
-
-        # Weekly countdown: prefer resets_at from API
-        week_resets_at = self._last_data.get("weekly_resets_at")
-        if week_resets_at:
-            resets_epoch = _parse_ts(week_resets_at)
-            week_secs = max(0, int((resets_epoch or now_epoch) - now_epoch))
-        else:
-            week_secs = seconds_until_weekly_reset(self.config.get("week_start_day", 6))
-        self.lbl_week_reset.config(text=f"↺ {fmt_countdown(week_secs)}")
+            self.lbl_win_reset.config(text=f"↺ {fmt_countdown(secs)}")
 
         self.root.after(1000, self._tick)
 

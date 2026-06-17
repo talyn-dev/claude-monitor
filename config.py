@@ -5,6 +5,8 @@ DEFAULT = {
     "refresh_interval": 30,
     "claude_dir": str(Path.home() / ".claude"),
     "opacity": 0.88,
+    "width_scale": 0.5,             # overlay width as a fraction of its natural width
+    "overlay_visible": False,       # floating overlay hidden by default; tray is primary
     "display_range": "today",       # "today" or "week"
     "week_start_day": 6,            # 0=Mon … 6=Sun
     "window_hours": 5,              # rolling usage window (Claude Code resets every 5h)
