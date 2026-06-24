@@ -459,8 +459,11 @@ class UsageFetcher:
     # ── Main refresh ──────────────────────────────────────────────────────────
 
     def refresh(self):
-        # Always scan local JSONL for cost estimates
-        data = self._scan_local()
+        # Scan local JSONL for cost estimates, unless disabled (bars-only mode).
+        if self.config.get("skip_local_scan"):
+            data = {"window": _empty_totals(), "week": _empty_totals(), "source": "skipped"}
+        else:
+            data = self._scan_local()
 
         # Try claude.ai API for real percentages
         session_key = self.config.get("claude_session", "").strip()

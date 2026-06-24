@@ -100,10 +100,12 @@ class TrayIcon:
         self._last_data = {}
         self._last_pct = None
 
+        label = config.get("label", "").strip()
+        self._label = label
         self.icon = pystray.Icon(
-            "claude_monitor",
+            f"claude_monitor_{label}" if label else "claude_monitor",
             icon=_render(None),
-            title="Claude Monitor — loading…",
+            title=f"{label} — loading…" if label else "Claude Monitor — loading…",
             menu=self._build_menu(),
         )
         fetcher.add_callback(self._on_data)
@@ -158,11 +160,17 @@ class TrayIcon:
 
     def _update_tooltip(self):
         pct = self._last_data.get("window_pct")
-        cost = self._last_data.get("window", {}).get("total_cost", 0)
+        wk_pct = self._last_data.get("weekly_pct")
         secs = window_reset_secs(self._last_data, self.config)
-        parts = ["5h"]
-        parts.append("—%" if pct is None else f"{pct:.0f}%")
-        parts.append(f"${cost:.2f}")
+        parts = []
+        if self._label:
+            parts.append(self._label)
+        parts.append("5h —%" if pct is None else f"5h {pct:.0f}%")
+        if wk_pct is not None:
+            parts.append(f"7d {wk_pct:.0f}%")
+        if not self.config.get("skip_local_scan"):
+            cost = self._last_data.get("window", {}).get("total_cost", 0)
+            parts.append(f"${cost:.2f}")
         parts.append("↺ fresh" if secs is None else f"↺ {fmt_countdown(secs)}")
         self.icon.title = " · ".join(parts)
 
