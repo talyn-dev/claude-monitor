@@ -63,8 +63,12 @@ def _fit_font(d, text, max_w, max_h):
     return font, d.textbbox((0, 0), text, font=font)
 
 
-def _render(pct):
-    """Draw 'NN%' as large as possible over a thin color-coded progress bar."""
+def _render(pct, prefix=""):
+    """Draw '[prefix]NN' as large as possible over a thin color-coded progress bar.
+
+    `prefix` is an optional one-letter tag (e.g. "N"/"S") so multiple instances
+    are distinguishable at a glance in the tray without hovering.
+    """
     img = Image.new("RGBA", (ICON_SIZE, ICON_SIZE), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     color = _color(pct) + (255,)
@@ -73,8 +77,8 @@ def _render(pct):
     bar_h = max(6, ICON_SIZE // 11)         # thin strip at the bottom
     text_region = ICON_SIZE - bar_h - pad
 
-    # ── percentage number — auto-fit to fill the icon ──
-    text = "—" if pct is None else str(int(round(pct)))
+    # ── label letter + percentage number — auto-fit to fill the icon ──
+    text = prefix + ("—" if pct is None else str(int(round(pct))))
     font, bbox = _fit_font(d, text, ICON_SIZE - 2 * pad, text_region)
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     tx = (ICON_SIZE - tw) / 2 - bbox[0]
@@ -102,9 +106,10 @@ class TrayIcon:
 
         label = config.get("label", "").strip()
         self._label = label
+        self._prefix = label[:1].upper()   # one-letter tag drawn on the icon
         self.icon = pystray.Icon(
             f"claude_monitor_{label}" if label else "claude_monitor",
-            icon=_render(None),
+            icon=_render(None, self._prefix),
             title=f"{label} — loading…" if label else "Claude Monitor — loading…",
             menu=self._build_menu(),
         )
@@ -155,7 +160,7 @@ class TrayIcon:
         pct = data.get("window_pct")
         if pct != self._last_pct:
             self._last_pct = pct
-            self.icon.icon = _render(pct)
+            self.icon.icon = _render(pct, self._prefix)
         self._update_tooltip()
 
     def _update_tooltip(self):
