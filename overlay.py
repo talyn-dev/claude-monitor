@@ -81,7 +81,7 @@ class Overlay:
         self.on_quit   = None   # optional hook (e.g. stop tray) run before quitting
 
         self.root = tk.Tk()
-        self.root.title("Claude Monitor")
+        self.root.title(config.get("label", "").strip() or "Claude Monitor")
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
         self.root.attributes("-alpha", config.get("opacity", 0.88))
@@ -237,7 +237,10 @@ class Overlay:
         self.lbl_updated.config(text=data.get("last_updated", "—"))
 
     def _refresh_block(self, lbl_cost, lbl_pct, bar, cost, api_pct, limit):
-        lbl_cost.config(text=f"${cost:.2f}", fg=_cost_color(cost))
+        if self.config.get("skip_local_scan"):
+            lbl_cost.config(text="")
+        else:
+            lbl_cost.config(text=f"${cost:.2f}", fg=_cost_color(cost))
         if api_pct is not None:
             pct   = api_pct / 100.0
             color = _pct_color(pct)

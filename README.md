@@ -55,6 +55,22 @@ All settings are optional — the overlay works with no config file.
 | `window_limit_usd` | `0` | Dollar limit for 5h bar fallback (used only if session key unavailable) |
 | `weekly_limit_usd` | `0` | Dollar limit for weekly bar fallback |
 | `admin_api_key` | `""` | Anthropic Admin API key for org-level cost data |
+| `label` | `""` | Short name shown in the tray tooltip / overlay title (handy when running more than one instance) |
+| `skip_local_scan` | `false` | Skip the local JSONL cost scan — bars-only mode. Avoids a slow per-refresh scan of a large `~/.claude/projects` history; the `$` estimate is then omitted |
+
+## Running multiple instances
+
+The usage % is per **claude.ai account** (it comes from the sessionKey), so you can
+watch more than one subscription at once by running one instance per account. Point
+each at its own config with `--config`:
+
+```
+pythonw main.py --config config-work.json
+pythonw main.py --config config-personal.json
+```
+
+Give each a different `claude_session` and a `label` so the two tray icons are easy
+to tell apart. Pair with `skip_local_scan: true` if you only want the live % bars.
 
 ## Notes
 
