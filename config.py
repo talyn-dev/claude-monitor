@@ -17,6 +17,10 @@ DEFAULT = {
     "display_range": "today",       # "today" or "week"
     "week_start_day": 6,            # 0=Mon … 6=Sun
     "window_hours": 5,              # rolling usage window (Claude Code resets every 5h)
+    # When the weekly "All models" usage % exceeds this, the tray icon shows the
+    # weekly number (with a red top stripe) instead of the 5h number, so you can
+    # ration the rest of the week. Set to 100 to disable the switch.
+    "weekly_alert_pct": 80,
     "window_limit_usd": 0,          # 0 = not configured; only used if claude_session is empty
     "weekly_limit_usd": 0,          # 0 = not configured; only used if claude_session is empty
     # Paste your claude.ai sessionKey cookie here for real % from the API.

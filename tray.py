@@ -63,11 +63,15 @@ def _fit_font(d, text, max_w, max_h):
     return font, d.textbbox((0, 0), text, font=font)
 
 
-def _render(pct, prefix=""):
+def _render(pct, prefix="", alert=False):
     """Draw '[prefix]NN' as large as possible over a thin color-coded progress bar.
 
     `prefix` is an optional one-letter tag (e.g. "N"/"S") so multiple instances
     are distinguishable at a glance in the tray without hovering.
+
+    `alert` adds a red stripe along the top — used when the icon is showing the
+    weekly "All models" % (instead of the 5h %) because it crossed its threshold,
+    so the number is unmistakably the weekly one and not a high 5h reading.
     """
     img = Image.new("RGBA", (ICON_SIZE, ICON_SIZE), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
@@ -75,15 +79,21 @@ def _render(pct, prefix=""):
 
     pad = 2
     bar_h = max(6, ICON_SIZE // 11)         # thin strip at the bottom
-    text_region = ICON_SIZE - bar_h - pad
+    top_h = bar_h if alert else 0           # matching alert stripe at the top
+    text_region = ICON_SIZE - bar_h - top_h - pad
 
     # ── label letter + percentage number — auto-fit to fill the icon ──
     text = prefix + ("—" if pct is None else str(int(round(pct))))
     font, bbox = _fit_font(d, text, ICON_SIZE - 2 * pad, text_region)
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     tx = (ICON_SIZE - tw) / 2 - bbox[0]
-    ty = (text_region - th) / 2 - bbox[1]
+    ty = top_h + (text_region - th) / 2 - bbox[1]
     d.text((tx, ty), text, font=font, fill=color)
+
+    # ── alert stripe (top) — only when showing the weekly number ──
+    if alert:
+        d.rounded_rectangle([pad, 1, ICON_SIZE - pad, top_h], radius=3,
+                            fill=RED + (255,))
 
     # ── progress bar (bottom) ──
     bx0, bx1 = pad, ICON_SIZE - pad
@@ -102,7 +112,8 @@ class TrayIcon:
         self.config = config
         self.overlay = overlay
         self._last_data = {}
-        self._last_pct = None
+        self._last_state = None   # (displayed_pct, alert) — re-render only on change
+        self._weekly_alert = config.get("weekly_alert_pct", 80)
 
         label = config.get("label", "").strip()
         self._label = label
@@ -157,22 +168,40 @@ class TrayIcon:
 
     def _on_data(self, data):
         self._last_data = data
-        pct = data.get("window_pct")
-        if pct != self._last_pct:
-            self._last_pct = pct
-            self.icon.icon = _render(pct, self._prefix)
+        shown, alert = self._icon_value(data)
+        state = (shown, alert)
+        if state != self._last_state:
+            self._last_state = state
+            self.icon.icon = _render(shown, self._prefix, alert)
         self._update_tooltip()
+
+    def _icon_value(self, data):
+        """Which % the icon shows: the weekly 'All models' number when it's over
+        the alert threshold (so end-of-week rationing is visible), else the 5h."""
+        win = data.get("window_pct")
+        wk = data.get("weekly_pct")
+        if wk is not None and wk > self._weekly_alert:
+            return wk, True
+        return win, False
 
     def _update_tooltip(self):
         pct = self._last_data.get("window_pct")
         wk_pct = self._last_data.get("weekly_pct")
         secs = window_reset_secs(self._last_data, self.config)
+        alert = wk_pct is not None and wk_pct > self._weekly_alert
         parts = []
         if self._label:
             parts.append(self._label)
-        parts.append("5h —%" if pct is None else f"5h {pct:.0f}%")
-        if wk_pct is not None:
-            parts.append(f"7d {wk_pct:.0f}%")
+        w5 = "5h —%" if pct is None else f"5h {pct:.0f}%"
+        w7 = None if wk_pct is None else f"7d {wk_pct:.0f}%"
+        if alert:
+            # weekly is what's on the icon and what matters — lead with it
+            parts.append(f"⚠ {w7}")
+            parts.append(w5)
+        else:
+            parts.append(w5)
+            if w7:
+                parts.append(w7)
         if not self.config.get("skip_local_scan"):
             cost = self._last_data.get("window", {}).get("total_cost", 0)
             parts.append(f"${cost:.2f}")
